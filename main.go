@@ -1,47 +1,49 @@
 package main
 
 import (
-	"bufio"
-	"fmt"
 	"golang.org/x/crypto/ssh"
-	"io"
 	"io/ioutil"
 	"log"
 	"net"
 	"sync"
 )
 
-type Client struct {
-	channel  ssh.Channel
-	username string
-	msgChan  chan string
-}
-
 var (
 	clients      = make(map[*Client]bool)
-	broadcast    = make(chan string)
+	broadcast    = make(chan Message)
 	addClient    = make(chan *Client)
 	removeClient = make(chan *Client)
 	mu           sync.Mutex
 )
 
-func handleClient(client *Client) {
-	defer client.channel.Close()
-	reader := bufio.NewReader(client.channel)
-	for {
-		message, err := reader.ReadString('\n')
-		if err != nil {
-			if err == io.EOF {
-				log.Printf("%s 断开连接", client.username)
-				removeClient <- client
-				return
-			}
-			log.Println("客户端消息读取失败:", err)
-			return
-		}
+func main() {
+	go broadcaster()
 
-		formattedMsg := fmt.Sprintf("[%s]: %s", client.username, message)
-		broadcast <- formattedMsg
+	signer, err := loadHostKey()
+	if err != nil {
+		log.Fatalf("私钥加载失败: %v", err)
+	}
+
+	config := &ssh.ServerConfig{
+		NoClientAuth: true,
+	}
+	config.AddHostKey(signer)
+
+	listener, err := net.Listen("tcp", "0.0.0.0:2222")
+	if err != nil {
+		log.Fatalf("监听连接失败: %v", err)
+	}
+	defer listener.Close()
+
+	log.Println("开始监听 0.0.0.0:2222...")
+
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			log.Printf("建立连接失败: %v", err)
+			continue
+		}
+		go sshHandler(conn, config)
 	}
 }
 
@@ -109,57 +111,20 @@ func sshHandler(conn net.Conn, config *ssh.ServerConfig) {
 		client := &Client{
 			channel:  channel,
 			username: sshConn.User(),
-			msgChan:  make(chan string),
+			msgChan:  make(chan Message),
 		}
 
 		addClient <- client
-		go handleClient(client)
-
-		go func() {
-			writer := bufio.NewWriter(channel)
-			for msg := range client.msgChan {
-				writer.WriteString(msg)
-				writer.Flush()
-			}
-		}()
+		SaveMsg(nil, sshConn.User()+"上线了！\n")
+		go HandleClient(client)
+		go SendMsg(client)
 	}
 }
 
-func LoadHostKey() (ssh.Signer, error) {
+func loadHostKey() (ssh.Signer, error) {
 	key, err := ioutil.ReadFile("key.txt")
 	if err != nil {
 		return nil, err
 	}
 	return ssh.ParsePrivateKey(key)
-}
-
-func main() {
-	go broadcaster()
-
-	signer, err := LoadHostKey()
-	if err != nil {
-		log.Fatalf("私钥加载失败: %v", err)
-	}
-
-	config := &ssh.ServerConfig{
-		NoClientAuth: true,
-	}
-	config.AddHostKey(signer)
-
-	listener, err := net.Listen("tcp", "0.0.0.0:2222")
-	if err != nil {
-		log.Fatalf("监听连接失败: %v", err)
-	}
-	defer listener.Close()
-
-	log.Println("开始监听  0.0.0.0:2222...")
-
-	for {
-		conn, err := listener.Accept()
-		if err != nil {
-			log.Printf("建立连接失败: %v", err)
-			continue
-		}
-		go sshHandler(conn, config)
-	}
 }
