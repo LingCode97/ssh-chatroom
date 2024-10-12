@@ -5,12 +5,13 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"strings"
 )
 
 func SendMsg(client *Client) {
 	writer := bufio.NewWriter(client.channel)
 	for msg := range client.msgChan {
-		if msg.sendClient == client {
+		if client == msg.sendClient {
 			continue
 		}
 		writer.WriteString(msg.msg)
@@ -18,6 +19,7 @@ func SendMsg(client *Client) {
 	}
 }
 
+// SaveMsg 将消息保存到全局广播变量中，异步发送
 func SaveMsg(client *Client, msg string) {
 	username := "系统"
 	color := "\u001B[33m"
@@ -31,6 +33,11 @@ func SaveMsg(client *Client, msg string) {
 		sendClient: client,
 	}
 	broadcast <- Msg
+}
+
+// AssignMsg 给指定客户端发送消息
+func AssignMsg(client *Client, msg string) {
+	client.msgChan <- Message{msg: msg}
 }
 
 func HandleClient(client *Client) {
@@ -48,7 +55,12 @@ func HandleClient(client *Client) {
 			log.Println("客户端消息读取失败:", err)
 			return
 		}
-		SaveMsg(client, message)
+		//判断是命令还是消息，#开头是命令
+		if strings.HasPrefix(message, "#") {
+			Cmd(client, message)
+		} else {
+			SaveMsg(client, message)
+		}
 	}
 }
 

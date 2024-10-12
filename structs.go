@@ -23,3 +23,20 @@ var colors = []string{
 	"\033[35m", // 紫色
 	"\033[36m", // 青色
 }
+
+// 支持的命令
+var commands = map[string]string{
+	Help:    "显示帮助信息",
+	Color:   "切换颜色",
+	Nick:    "修改昵称",
+	History: "查看历史消息",
+	Users:   "查询在线用户",
+}
+
+const (
+	Help    string = "help"
+	Color   string = "color"
+	Nick    string = "nick"
+	History string = "history"
+	Users   string = "users"
+)
