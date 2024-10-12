@@ -1,157 +1,165 @@
 package main
 
 import (
-	"crypto/rand"
-	"crypto/rsa"
-	"crypto/x509"
-	"encoding/pem"
+	"bufio"
 	"fmt"
+	"golang.org/x/crypto/ssh"
 	"io"
+	"io/ioutil"
 	"log"
 	"net"
 	"sync"
-
-	"golang.org/x/crypto/ssh"
 )
 
-// 定义一个全局聊天室管理器
-type ChatRoom struct {
-	mu      sync.Mutex
-	clients map[string]io.Writer
+type Client struct {
+	channel  ssh.Channel
+	username string
+	msgChan  chan string
 }
 
-func NewChatRoom() *ChatRoom {
-	return &ChatRoom{
-		clients: make(map[string]io.Writer),
+var (
+	clients      = make(map[*Client]bool)
+	broadcast    = make(chan string)
+	addClient    = make(chan *Client)
+	removeClient = make(chan *Client)
+	mu           sync.Mutex
+)
+
+func handleClient(client *Client) {
+	defer client.channel.Close()
+	reader := bufio.NewReader(client.channel)
+	for {
+		message, err := reader.ReadString('\n')
+		if err != nil {
+			if err == io.EOF {
+				log.Printf("%s 断开连接", client.username)
+				removeClient <- client
+				return
+			}
+			log.Println("客户端消息读取失败:", err)
+			return
+		}
+
+		formattedMsg := fmt.Sprintf("[%s]: %s", client.username, message)
+		broadcast <- formattedMsg
 	}
 }
 
-func (c *ChatRoom) Join(clientID string, writer io.Writer) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.clients[clientID] = writer
-}
-
-func (c *ChatRoom) Leave(clientID string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	delete(c.clients, clientID)
-}
-
-func (c *ChatRoom) Broadcast(sender, msg string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	for id, client := range c.clients {
-		if id != sender { // 不要广播给发送者自己
-			fmt.Fprintln(client, msg)
+func broadcaster() {
+	for {
+		select {
+		case msg := <-broadcast:
+			mu.Lock()
+			for client := range clients {
+				client.msgChan <- msg
+			}
+			mu.Unlock()
+		case client := <-addClient:
+			mu.Lock()
+			clients[client] = true
+			mu.Unlock()
+		case client := <-removeClient:
+			mu.Lock()
+			if _, ok := clients[client]; ok {
+				delete(clients, client)
+				close(client.msgChan)
+			}
+			mu.Unlock()
 		}
 	}
 }
 
-var chatRoom = NewChatRoom()
-
-// 生成 SSH 私钥
-func generatePrivateKey() (ssh.Signer, error) {
-	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		return nil, err
-	}
-
-	privateKeyPEM := &pem.Block{
-		Type:  "RSA PRIVATE KEY",
-		Bytes: x509.MarshalPKCS1PrivateKey(privateKey),
-	}
-
-	privateKeyBytes := pem.EncodeToMemory(privateKeyPEM)
-
-	// 将生成的私钥转换为 SSH 格式
-	signer, err := ssh.ParsePrivateKey(privateKeyBytes)
-	if err != nil {
-		return nil, err
-	}
-	return signer, nil
-}
-
-// 简单的 SSH 服务端配置
-func handleSSHConnection(conn net.Conn) {
-	config := &ssh.ServerConfig{
-		NoClientAuth: true, // 不验证客户端
-	}
-
-	private, err := generatePrivateKey()
-	if err != nil {
-		log.Fatal("生成私钥失败:", err)
-	}
-	fmt.Println(private)
-
-	config.AddHostKey(private)
-
-	// 协商 SSH 会话
+func sshHandler(conn net.Conn, config *ssh.ServerConfig) {
 	sshConn, chans, reqs, err := ssh.NewServerConn(conn, config)
 	if err != nil {
-		log.Println("SSH 握手失败:", err)
+		log.Println("连接失败:", err)
 		return
 	}
 	defer sshConn.Close()
+
+	log.Printf("新的SSH连接： %s (%s)", sshConn.RemoteAddr(), sshConn.ClientVersion())
 
 	go ssh.DiscardRequests(reqs)
 
 	for newChannel := range chans {
 		if newChannel.ChannelType() != "session" {
-			newChannel.Reject(ssh.UnknownChannelType, "未知的通道类型")
+			newChannel.Reject(ssh.UnknownChannelType, "unknown channel type")
 			continue
 		}
 
 		channel, requests, err := newChannel.Accept()
 		if err != nil {
-			log.Println("无法接受通道:", err)
-			continue
+			log.Println("无法接受channel:", err)
+			return
 		}
-		defer channel.Close()
 
-		clientID := sshConn.RemoteAddr().String()
-		chatRoom.Join(clientID, channel)
-		defer chatRoom.Leave(clientID)
-
-		go func() {
-			for req := range requests {
-				if req.Type == "shell" {
+		go func(in <-chan *ssh.Request) {
+			for req := range in {
+				switch req.Type {
+				case "shell":
 					req.Reply(true, nil)
+				case "window-change":
+					req.Reply(true, nil)
+				default:
+					req.Reply(false, nil)
 				}
 			}
-		}()
+		}(requests)
 
-		// 处理客户端输入
+		client := &Client{
+			channel:  channel,
+			username: sshConn.User(),
+			msgChan:  make(chan string),
+		}
+
+		addClient <- client
+		go handleClient(client)
+
 		go func() {
-			buf := make([]byte, 1024)
-			for {
-				n, err := channel.Read(buf)
-				if err != nil {
-					break
-				}
-				msg := string(buf[:n])
-				chatRoom.Broadcast(clientID, msg)
+			writer := bufio.NewWriter(channel)
+			for msg := range client.msgChan {
+				writer.WriteString(msg)
+				writer.Flush()
 			}
 		}()
 	}
 }
 
+func LoadHostKey() (ssh.Signer, error) {
+	key, err := ioutil.ReadFile("key.txt")
+	if err != nil {
+		return nil, err
+	}
+	return ssh.ParsePrivateKey(key)
+}
+
 func main() {
+	go broadcaster()
+
+	signer, err := LoadHostKey()
+	if err != nil {
+		log.Fatalf("私钥加载失败: %v", err)
+	}
+
+	config := &ssh.ServerConfig{
+		NoClientAuth: true,
+	}
+	config.AddHostKey(signer)
+
 	listener, err := net.Listen("tcp", "0.0.0.0:2222")
 	if err != nil {
-		log.Fatal("无法监听端口:", err)
+		log.Fatalf("监听连接失败: %v", err)
 	}
 	defer listener.Close()
 
-	log.Println("SSH 聊天室服务器启动，等待连接...")
+	log.Println("开始监听 0.0.0.0:2222...")
 
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
-			log.Println("无法接受连接:", err)
+			log.Printf("建立连接失败: %v", err)
 			continue
 		}
-
-		go handleSSHConnection(conn)
+		go sshHandler(conn, config)
 	}
 }
