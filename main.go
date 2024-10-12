@@ -152,7 +152,7 @@ func main() {
 	}
 	defer listener.Close()
 
-	log.Println("开始监听 0.0.0.0:2222...")
+	log.Println("开始监听  0.0.0.0:2222...")
 
 	for {
 		conn, err := listener.Accept()
