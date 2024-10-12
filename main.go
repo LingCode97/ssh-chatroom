@@ -14,6 +14,7 @@ var (
 	addClient    = make(chan *Client)
 	removeClient = make(chan *Client)
 	mu           sync.Mutex
+	colorIndex   int
 )
 
 func main() {
@@ -112,8 +113,9 @@ func sshHandler(conn net.Conn, config *ssh.ServerConfig) {
 			channel:  channel,
 			username: sshConn.User(),
 			msgChan:  make(chan Message),
+			color:    GetNextColor(colorIndex),
 		}
-
+		colorIndex++
 		addClient <- client
 		SaveMsg(nil, sshConn.User()+"上线了！\n")
 		go HandleClient(client)

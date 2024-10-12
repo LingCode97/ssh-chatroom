@@ -20,10 +20,12 @@ func SendMsg(client *Client) {
 
 func SaveMsg(client *Client, msg string) {
 	username := "系统"
+	color := "\u001B[33m"
 	if client != nil {
 		username = client.username
+		color = client.color
 	}
-	formattedMsg := fmt.Sprintf("[%s]: %s", username, msg)
+	formattedMsg := fmt.Sprintf("%s[%s]: %s\033[0m", color, username, msg)
 	Msg := Message{
 		msg:        formattedMsg,
 		sendClient: client,
@@ -48,4 +50,11 @@ func HandleClient(client *Client) {
 		}
 		SaveMsg(client, message)
 	}
+}
+
+func GetNextColor(colorIndex int) string {
+	// 循环分配颜色
+	color := colors[colorIndex%len(colors)]
+	colorIndex++
+	return color
 }
