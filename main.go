@@ -1,132 +1,65 @@
 package main
 
 import (
-	"golang.org/x/crypto/ssh"
-	"io/ioutil"
+	"fmt"
+	"github.com/gliderlabs/ssh"
+	"golang.org/x/crypto/ssh/terminal"
 	"log"
-	"net"
-	"sync"
+	"math/rand/v2"
 )
 
 var (
-	clients      = make(map[*Client]bool)
-	broadcast    = make(chan Message)
-	addClient    = make(chan *Client)
-	removeClient = make(chan *Client)
-	mu           sync.Mutex
-	colorIndex   int
+	onlineUsers    map[ssh.Session]*User
+	availableRooms map[string]*Room
 )
 
 func main() {
-	go broadcaster()
+	onlineUsers = make(map[ssh.Session]*User)
+	availableRooms = make(map[string]*Room)
+	availableRooms[Default] = &Room{Name: Default}
+	availableRooms[Tech] = &Room{Name: Tech}
+	availableRooms[Music] = &Room{Name: Music}
 
-	signer, err := loadHostKey()
-	if err != nil {
-		log.Fatalf("私钥加载失败: %v", err)
-	}
-
-	config := &ssh.ServerConfig{
-		NoClientAuth: true,
-	}
-	config.AddHostKey(signer)
-
-	listener, err := net.Listen("tcp", "0.0.0.0:2222")
-	if err != nil {
-		log.Fatalf("监听连接失败: %v", err)
-	}
-	defer listener.Close()
-
-	log.Println("开始监听 0.0.0.0:2222...")
-
-	for {
-		conn, err := listener.Accept()
-		if err != nil {
-			log.Printf("建立连接失败: %v", err)
-			continue
-		}
-		go sshHandler(conn, config)
-	}
-}
-
-func broadcaster() {
-	for {
-		select {
-		case msg := <-broadcast:
-			mu.Lock()
-			for client := range clients {
-				client.msgChan <- msg
-			}
-			mu.Unlock()
-		case client := <-addClient:
-			mu.Lock()
-			clients[client] = true
-			mu.Unlock()
-		case client := <-removeClient:
-			mu.Lock()
-			if _, ok := clients[client]; ok {
-				delete(clients, client)
-				close(client.msgChan)
-			}
-			mu.Unlock()
-		}
-	}
-}
-
-func sshHandler(conn net.Conn, config *ssh.ServerConfig) {
-	sshConn, chans, reqs, err := ssh.NewServerConn(conn, config)
-	if err != nil {
-		log.Println("连接失败:", err)
-		return
-	}
-	defer sshConn.Close()
-
-	log.Printf("新的SSH连接： %s (%s)", sshConn.RemoteAddr(), sshConn.ClientVersion())
-
-	go ssh.DiscardRequests(reqs)
-
-	for newChannel := range chans {
-		if newChannel.ChannelType() != "session" {
-			newChannel.Reject(ssh.UnknownChannelType, "unknown channel type")
-			continue
-		}
-
-		channel, requests, err := newChannel.Accept()
-		if err != nil {
-			log.Println("无法接受channel:", err)
-			return
-		}
-
-		go func(in <-chan *ssh.Request) {
-			for req := range in {
-				switch req.Type {
-				case "shell":
-					req.Reply(true, nil)
-				case "window-change":
-					req.Reply(true, nil)
-				default:
-					req.Reply(false, nil)
+	ssh.Handle(func(s ssh.Session) {
+		//监听断开连接
+		go func(s ssh.Session) {
+			select {
+			case <-s.Context().Done():
+				if _, ok := onlineUsers[s]; ok {
+					onlineUsers[s].Room.Leave(s)
 				}
 			}
-		}(requests)
+		}(s)
+		chat(s)
+	})
 
-		client := &Client{
-			channel:  channel,
-			username: sshConn.User(),
-			msgChan:  make(chan Message),
-			color:    GetNextColor(colorIndex),
-		}
-		colorIndex++
-		addClient <- client
-		SaveMsg(nil, sshConn.User()+"上线了！\n")
-		go HandleClient(client)
-		go SendMsg(client)
-	}
+	log.Println("开始监听端口 2222...")
+	log.Fatal(ssh.ListenAndServe(":2222", nil, ssh.HostKeyFile("key.txt")))
 }
 
-func loadHostKey() (ssh.Signer, error) {
-	key, err := ioutil.ReadFile("key.txt")
-	if err != nil {
-		return nil, err
+func chat(s ssh.Session) {
+	term := terminal.NewTerminal(s, fmt.Sprintf("%s > ", s.User()))
+	if _, ok := onlineUsers[s]; !ok {
+		//初次加入聊天室,分配默认房间
+		d := availableRooms[Default]
+		user := &User{Session: s, Terminal: term, Room: d}
+		//随机分配颜色
+		index := rand.IntN(len(Colors))
+		user.Color = Colors[index]
+		onlineUsers[s] = user
+		d.Enter(user)
 	}
-	return ssh.ParsePrivateKey(key)
+	for {
+		line, err := term.ReadLine()
+		if err != nil {
+			break
+		}
+		if len(line) > 0 && onlineUsers[s] != nil {
+			if line[0] == '#' {
+				Cmd(s, line)
+			} else {
+				onlineUsers[s].Room.SendMessage(s.User(), line)
+			}
+		}
+	}
 }

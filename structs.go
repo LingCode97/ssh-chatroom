@@ -1,21 +1,30 @@
 package main
 
-import "golang.org/x/crypto/ssh"
-
-type Client struct {
-	channel  ssh.Channel
-	username string
-	msgChan  chan Message
-	color    string
-}
+import (
+	"github.com/gliderlabs/ssh"
+	"golang.org/x/crypto/ssh/terminal"
+)
 
 type Message struct {
-	msg        string
-	sendClient *Client //发送消息的客户端
+	Msg  string
+	From string
+}
+
+type User struct {
+	Session  ssh.Session
+	Terminal *terminal.Terminal
+	Room     *Room
+	Color    string
+}
+
+type Room struct {
+	Name    string
+	History []Message
+	Users   []*User
 }
 
 // ANSI 颜色码
-var colors = []string{
+var Colors = []string{
 	"\033[31m", // 红色
 	"\033[32m", // 绿色
 	"\033[33m", // 黄色
@@ -39,4 +48,11 @@ const (
 	Nick    string = "nick"
 	History string = "history"
 	Users   string = "users"
+)
+
+// 频道名称
+const (
+	Default string = "default"
+	Tech    string = "tech"
+	Music   string = "music"
 )
