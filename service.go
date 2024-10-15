@@ -3,20 +3,20 @@ package main
 import (
 	"fmt"
 	"github.com/gliderlabs/ssh"
-	"golang.org/x/crypto/ssh/terminal"
 	"log"
 )
 
 type ChatService interface {
-	Enter(sess ssh.Session, term *terminal.Terminal)
+	Enter(u *User)
 	SendMessage(from, message string)
 	Leave(sess ssh.Session)
 }
 
 func (r *Room) Enter(u *User) {
 	log.Println(fmt.Sprintf("用户%s加入聊天室", u.Session.User()))
+	u.Room = r
 	r.Users = append(r.Users, u)
-	entryMsg := Message{From: r.Name, Msg: "Welcome to my room!"}
+	entryMsg := Message{From: r.Name, Msg: "Welcome to " + r.Name + "!"}
 	send(u, entryMsg)
 	//自动回溯最新10条消息
 	sendCount := 0

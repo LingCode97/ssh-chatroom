@@ -42,7 +42,7 @@ func chat(s ssh.Session) {
 	if _, ok := onlineUsers[s]; !ok {
 		//初次加入聊天室,分配默认房间
 		d := availableRooms[Default]
-		user := &User{Session: s, Terminal: term, Room: d}
+		user := &User{Session: s, Terminal: term}
 		//随机分配颜色
 		index := rand.IntN(len(Colors))
 		user.Color = Colors[index]

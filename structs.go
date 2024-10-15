@@ -40,6 +40,9 @@ var commands = map[string]string{
 	Nick:    "修改昵称",
 	History: "查看历史消息",
 	Users:   "查询在线用户",
+	Rooms:   "查询房间列表",
+	Enter:   "进入房间",
+	Leave:   "离开房间",
 }
 
 const (
@@ -48,6 +51,9 @@ const (
 	Nick    string = "nick"
 	History string = "history"
 	Users   string = "users"
+	Rooms   string = "rooms"
+	Enter   string = "enter"
+	Leave   string = "leave"
 )
 
 // 频道名称
